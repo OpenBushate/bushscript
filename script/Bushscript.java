@@ -22,16 +22,16 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * IridiumBrowser
+ * Bushscript
  *
  * A one-file local browser launcher with a loopback-only HTTP/HTTPS forward
  * proxy. It uses an installed Chromium browser for rendering. HTTPS traffic is
  * tunneled with CONNECT and is not decrypted.
  *
- * Compile: javac IridiumBrowser.java
- * Run:     java IridiumBrowser
- * URL:     java IridiumBrowser https://example.com
- * Options: java IridiumBrowser --port=8899 --browser="C:\path\chrome.exe"
+ * Compile: javac Bushscript.java
+ * Run:     java Bushscript
+ * URL:     java Bushscript https://example.com
+ * Options: java Bushscript --port=8899 --browser="C:\path\chrome.exe"
  */
 
 public final class Bushscript {
@@ -41,14 +41,14 @@ public final class Bushscript {
     private static final AtomicLong CONNECTIONS = new AtomicLong();
 
     private final ExecutorService workers = Executors.newCachedThreadPool(r -> {
-        Thread thread = new Thread(r, "iridium-proxy-worker");
+        Thread thread = new Thread(r, "Bush-proxy-worker");
         thread.setDaemon(true);
         return thread;
     });
 
     private final ServerSocket server;
 
-    private IridiumBrowser(int port) throws IOException {
+    private Bushscript(int port) throws IOException {
         server = new ServerSocket();
         server.setReuseAddress(true);
         server.bind(new InetSocketAddress("127.0.0.1", port));
@@ -62,7 +62,7 @@ public final class Bushscript {
 
         int port = DEFAULT_PORT;
         String requestedBrowser = null;
-        String startUrl = "https://wbattist.github.io/term-ting";
+        String startUrl = "https://google.com";
         boolean noLaunch = false;
 
         for (String arg : args) {
@@ -77,12 +77,12 @@ public final class Bushscript {
             }
         }
 
-        IridiumBrowser proxy = new IridiumBrowser(port);
+        Bushscript proxy = new Bushscript(port);
         int actualPort = proxy.server.getLocalPort();
-        Runtime.getRuntime().addShutdownHook(new Thread(proxy::close, "iridium-shutdown"));
+        Runtime.getRuntime().addShutdownHook(new Thread(proxy::close, "Bush-shutdown"));
         proxy.start();
 
-        System.out.println("Iridium Local Browser");
+        System.out.println("Bush Local Browser");
         System.out.println("Proxy:   http://127.0.0.1:" + actualPort);
         System.out.println("Privacy: HTTPS is tunneled without decryption");
 
@@ -115,7 +115,7 @@ public final class Bushscript {
                     }
                 }
             }
-        }, "iridium-proxy-acceptor");
+        }, "Bush-proxy-acceptor");
         acceptor.setDaemon(true);
         acceptor.start();
     }
@@ -159,7 +159,7 @@ public final class Bushscript {
             throws IOException {
         try (Socket upstream = connect(target)) {
             clientOut.write(("HTTP/1.1 200 Connection Established\r\n"
-                    + "Proxy-Agent: IridiumLocal/1.0\r\n\r\n")
+                    + "Proxy-Agent: BushLocal/1.0\r\n\r\n")
                     .getBytes(StandardCharsets.ISO_8859_1));
             clientOut.flush();
             relayBothWays(clientIn, clientOut, upstream);
@@ -347,7 +347,7 @@ public final class Bushscript {
 
     private static void sendError(OutputStream output, int status, String message) {
         try {
-            String body = "Iridium Proxy: " + message + "\n";
+            String body = "Bush Proxy: " + message + "\n";
             String response = "HTTP/1.1 " + status + " " + message + "\r\n"
                     + "Content-Type: text/plain; charset=utf-8\r\n"
                     + "Content-Length: " + body.getBytes(StandardCharsets.UTF_8).length + "\r\n"
@@ -400,7 +400,7 @@ public final class Bushscript {
 
     // Modification: We now return the Process object created by the ProcessBuilder
     private static Process launchBrowser(Path browser, int port, String url) throws IOException {
-        Path profile = Path.of(System.getProperty("user.home"), ".iridium-local-browser");
+        Path profile = Path.of(System.getProperty("user.home"), ".Bush-local-browser");
         Files.createDirectories(profile);
         return new ProcessBuilder(
                 browser.toString(),
@@ -446,11 +446,11 @@ public final class Bushscript {
 
     private static void printHelp() {
         System.out.println("""
-                Iridium Local Browser
+                Bush Local Browser
 
                 Usage:
-                  javac IridiumBrowser.java
-                  java IridiumBrowser [URL or search] [options]
+                  javac Bushscript.java
+                  java Bushscript [URL or search] [options]
 
                 Options:
                   --port=NUMBER       Local proxy port (default 8899)
@@ -459,7 +459,7 @@ public final class Bushscript {
                   --help              Show this help
 
                 The proxy listens only on 127.0.0.1. HTTPS uses CONNECT tunneling;
-                Iridium cannot inspect or modify encrypted page contents.
+                Bush cannot inspect or modify encrypted page contents.
                 """);
     }
 
