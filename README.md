@@ -36,7 +36,7 @@ You can create a Windows batch file to launch the program without opening NetBea
 2. Paste the following command:
 
 ```bat
-java C:\Users\[USERNAME_HERE]\Documents\NetBeansProjects\Bushscript\src\Bushscript.java
+java C:\Users\[USERNAME_HERE]\Documents\NetBeansProjects\Bushscript\src\bushscript\Bushscript.java
 ```
 
 3. Replace `[USERNAME_HERE]` with your Windows username or student email string.
@@ -44,7 +44,7 @@ java C:\Users\[USERNAME_HERE]\Documents\NetBeansProjects\Bushscript\src\Bushscri
 For example:
 
 ```bat
-java C:\Users\abrown01\Documents\NetBeansProjects\Bushscript\src\Bushscript.java
+java C:\Users\abrown01\Documents\NetBeansProjects\Bushscript\src\bushscriptBushscript.java
 ```
 
 4. Save the file with a `.bat` extension, such as:
