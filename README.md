@@ -1,96 +1,74 @@
 # Bushscript
 
-Bushscript is a Java program that launches a browser window directly from NetBeans.
+## How to Run
 
-## Prerequisites
+### Prerequisites
 
 Before starting, make sure you have:
 
+* NetBeans IDE
 * Java installed
-* NetBeans IDE installed
-* Basic knowledge of Java and NetBeans
+* Basic Java knowledge
 
-## Installation
+## Step 1: Create the NetBeans Project
 
-### Step 1: Create the Project
-
-1. Open NetBeans.
-2. Create a new Java project named `Bushscript`.
-3. Open the project's `src` folder.
-4. Copy the contents of [`Bushscript.java`](https://github.com/OpenBushate/bushscript/blob/main/script/Bushscript.java).
-5. Paste the code into your project's main Java file.
-
-Make sure the class and file are both named:
+Create a new NetBeans project named:
 
 ```text
 Bushscript
 ```
 
-### Step 2: Run Bushscript
+Copy the Java file from:
 
-Click **Run Project** in NetBeans.
+```text
+https://github.com/OpenBushate/bushscript/blob/main/script/Bushscript.java
+```
 
-The browser should open automatically. When you close the program, the browser process will also terminate.
+Paste the file into your NetBeans project.
+
+Run the program through NetBeans. The browser should open automatically.
 
 ## Optional: Create a Desktop Shortcut
 
-You can create a Windows batch file to launch Bushscript without opening NetBeans.
+You can create a Windows batch file to launch the program without opening NetBeans.
 
 1. Open Notepad.
 2. Paste the following command:
 
 ```bat
-@echo off
-cd /d "C:\Users\USERNAME_HERE\Documents\NetBeansProjects\Bushscript"
-java src\Bushscript.java
-pause
+java C:\Users\[USERNAME_HERE]\Documents\NetBeansProjects\Bushscript\src\Bushscript.java
 ```
 
-3. Replace `USERNAME_HERE` with your Windows username.
+3. Replace `[USERNAME_HERE]` with your Windows username or student email string.
 
 For example:
 
 ```bat
-@echo off
-cd /d "C:\Users\abrown01\Documents\NetBeansProjects\Bushscript"
-java src\Bushscript.java
-pause
+java C:\Users\abrown01\Documents\NetBeansProjects\Bushscript\src\Bushscript.java
 ```
 
-4. Select **File → Save As**.
-5. Set **Save as type** to **All Files**.
-6. Name the file something like:
+4. Save the file with a `.bat` extension, such as:
 
 ```text
 Bushscript.bat
 ```
 
-You can now double-click the `.bat` file to launch Bushscript.
+5. Set **Save as type** to **All Files**.
 
-## Package Notice
+Double-click the `.bat` file to launch the browser. The program will terminate when the browser is closed.
 
-If `Bushscript.java` contains a package declaration, such as:
+## Package Folder
 
-```java
-package bushscript;
-```
+If the Java file is inside a package folder, include that folder in the path.
 
-the file will normally be located inside:
+For example, if the file is located at:
 
 ```text
-src\bushscript\Bushscript.java
+C:\Users\abrown01\Documents\NetBeansProjects\Bushscript\src\bushscript\Bushscript.java
 ```
 
-In that case, update the batch file command to use the correct file path:
+use:
 
 ```bat
-java src\bushscript\Bushscript.java
-```
-
-## Source Code
-
-The original source code is available here:
-
-```text
-https://github.com/OpenBushate/bushscript
+java C:\Users\abrown01\Documents\NetBeansProjects\Bushscript\src\bushscript\Bushscript.java
 ```
