@@ -21,19 +21,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicLong;
 
-/**
- * Bushscript
- *
- * A one-file local browser launcher with a loopback-only HTTP/HTTPS forward
- * proxy. It uses an installed Chromium browser for rendering. HTTPS traffic is
- * tunneled with CONNECT and is not decrypted.
- *
- * Compile: javac Bushscript.java
- * Run:     java Bushscript
- * URL:     java Bushscript https://example.com
- * Options: java Bushscript --port=8899 --browser="C:\path\chrome.exe"
- */
-
 public final class Bushscript {
     private static final int DEFAULT_PORT = 8899;
     private static final int MAX_HEADER_BYTES = 64 * 1024;
