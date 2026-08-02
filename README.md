@@ -12,7 +12,7 @@ Before starting, make sure you have:
 
 ## Step 1: Create the NetBeans Project
 
-Create a new NetBeans project named:
+Create a new NetBeans project (Ant Application) named:
 
 ```text
 Bushscript
