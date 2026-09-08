@@ -10,6 +10,10 @@ Before starting, make sure you have:
 * Java installed
 * Basic Java knowledge
 
+
+## AFTER DEPLOYMENT AND USE OF MANY, THE NETBEANS SETUP BELOW IS NO LONGER RECCONMENDED and IT IS HEAVILY RECCOMENDED TO DO THE "ADVANCED" APPROACH
+
+
 ## Step 1: Create the NetBeans Project
 
 Create a new NetBeans project (Ant Application) named:
