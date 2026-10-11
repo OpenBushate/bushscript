@@ -9,23 +9,36 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public final class Bushscript {
     private static final int DEFAULT_PORT = 8899;
     private static final int MAX_HEADER_BYTES = 64 * 1024;
     private static final int CONNECT_TIMEOUT_MS = 15_000;
-    private static final AtomicLong CONNECTIONS = new AtomicLong();
+    private static final Pattern PAGE_TARGET = Pattern.compile("\"type\"\\s*:\\s*\"page\"");
+
+    // ---- AdBlock state -------------------------------------------------------
+    private static final Set<String> BLOCKED_DOMAINS = ConcurrentHashMap.newKeySet();
+    private static volatile boolean adblockEnabled = true;
 
     private final ExecutorService workers = Executors.newCachedThreadPool(r -> {
         Thread thread = new Thread(r, "Bush-proxy-worker");
@@ -47,20 +60,46 @@ public final class Bushscript {
             return;
         }
 
+        System.out.println("If this program seemingly freezes, navigate to the terminal window "
+                + "and click CTRL + C, if this does not work restart the program completely. "
+                + "If further issues persist contact bush_support@downingtownstem.org");
+
         int port = DEFAULT_PORT;
         String requestedBrowser = null;
         String startUrl = "https://google.com";
         boolean noLaunch = false;
+        List<Path> extraBlocklists = new ArrayList<>();
 
         for (String arg : args) {
             if (arg.startsWith("--port=")) {
                 port = Integer.parseInt(arg.substring("--port=".length()));
             } else if (arg.startsWith("--browser=")) {
                 requestedBrowser = unquote(arg.substring("--browser=".length()));
+            } else if (arg.startsWith("--blocklist=")) {
+                extraBlocklists.add(Path.of(unquote(arg.substring("--blocklist=".length()))));
+            } else if (arg.equals("--no-adblock")) {
+                adblockEnabled = false;
             } else if (arg.equals("--no-launch")) {
                 noLaunch = true;
             } else if (!arg.startsWith("--")) {
                 startUrl = normalizeUrl(arg);
+            }
+        }
+
+        if (adblockEnabled) {
+            loadBuiltInBlocklist();
+            // Optional user list that is picked up automatically if present.
+            Path userList = Path.of(System.getProperty("user.home"),
+                    ".Bush-local-browser", "blocklist.txt");
+            if (Files.isRegularFile(userList)) {
+                extraBlocklists.add(0, userList);
+            }
+            for (Path list : extraBlocklists) {
+                try {
+                    loadBlocklistFile(list);
+                } catch (IOException error) {
+                    System.err.println("Could not read blocklist " + list + ": " + error.getMessage());
+                }
             }
         }
 
@@ -69,21 +108,13 @@ public final class Bushscript {
         Runtime.getRuntime().addShutdownHook(new Thread(proxy::close, "Bush-shutdown"));
         proxy.start();
 
-        System.out.println("Bush Local Browser");
-        System.out.println("Proxy:   http://127.0.0.1:" + actualPort);
-        System.out.println("Privacy: HTTPS is tunneled without decryption");
-
         if (!noLaunch) {
             Path browser = findBrowser(requestedBrowser);
             Process browserProcess = launchBrowser(browser, actualPort, startUrl);
-            System.out.println("Browser: " + browser);
-            System.out.println("The proxy will automatically stop when you close the browser...");
-            
-            // Block the main thread until the browser process ends
-            browserProcess.waitFor();
-            System.out.println("Browser closed. Shutting down.");
+
+            // Block the main thread until the browser is really closed
+            waitForBrowser(browserProcess, profileDir());
         } else {
-            System.out.println("Browser launch disabled; press Ctrl+C to stop.");
             // Only wait indefinitely if we didn't launch the browser
             new CountDownLatch(1).await();
         }
@@ -96,10 +127,8 @@ public final class Bushscript {
                     Socket client = server.accept();
                     client.setTcpNoDelay(true);
                     workers.execute(() -> handle(client));
-                } catch (IOException error) {
-                    if (!server.isClosed()) {
-                        System.err.println("Proxy accept error: " + error.getMessage());
-                    }
+                } catch (IOException ignored) {
+                    // Server closed or a transient accept failure; the loop re-checks isClosed().
                 }
             }
         }, "Bush-proxy-acceptor");
@@ -108,7 +137,6 @@ public final class Bushscript {
     }
 
     private void handle(Socket client) {
-        long id = CONNECTIONS.incrementAndGet();
         try (client) {
             client.setSoTimeout(30_000);
             InputStream clientIn = client.getInputStream();
@@ -129,18 +157,136 @@ public final class Bushscript {
             String method = request[0].toUpperCase(Locale.ROOT);
             if ("CONNECT".equals(method)) {
                 Target target = parseAuthority(request[1], 443);
-                System.out.printf("[%d] CONNECT %s:%d%n", id, target.host, target.port);
+                if (isBlocked(target.host)) {
+                    sendError(clientOut, 403, "Blocked by Bush AdBlock");
+                    return;
+                }
                 tunnelConnect(clientIn, clientOut, target);
                 return;
             }
 
             Target target = targetForHttp(request[1], lines);
-            System.out.printf("[%d] %s %s:%d%n", id, method, target.host, target.port);
+            if (isBlocked(target.host)) {
+                sendError(clientOut, 403, "Blocked by Bush AdBlock");
+                return;
+            }
             forwardHttp(clientIn, clientOut, header, request, target);
-        } catch (Exception error) {
-            System.err.printf("[%d] %s%n", id, error.getMessage());
+        } catch (Exception ignored) {
+            // Per-connection failures (resets, timeouts, bad requests) are expected; stay quiet.
         }
     }
+
+    // ---- AdBlock -------------------------------------------------------------
+
+    /** True if the host, or any parent domain of it, is on the blocklist. */
+    private static boolean isBlocked(String host) {
+        if (!adblockEnabled || host == null || host.isEmpty()) {
+            return false;
+        }
+        String current = host.toLowerCase(Locale.ROOT);
+        if (current.endsWith(".")) {
+            current = current.substring(0, current.length() - 1);
+        }
+        while (true) {
+            if (BLOCKED_DOMAINS.contains(current)) {
+                return true;
+            }
+            int dot = current.indexOf('.');
+            if (dot < 0) {
+                return false;
+            }
+            current = current.substring(dot + 1);
+        }
+    }
+
+    /**
+     * Loads a blocklist file. Understands hosts-file format ("0.0.0.0 ads.example.com"),
+     * plain domain-per-line lists, and simple Adblock-style "||ads.example.com^" rules.
+     * Returns the number of domains added.
+     */
+    private static int loadBlocklistFile(Path file) throws IOException {
+        int before = BLOCKED_DOMAINS.size();
+        for (String line : Files.readAllLines(file, StandardCharsets.UTF_8)) {
+            String domain = parseBlocklistLine(line);
+            if (domain != null) {
+                BLOCKED_DOMAINS.add(domain);
+            }
+        }
+        return BLOCKED_DOMAINS.size() - before;
+    }
+
+    private static String parseBlocklistLine(String raw) {
+        String line = raw;
+        int hash = line.indexOf('#');
+        if (hash >= 0) {
+            line = line.substring(0, hash);
+        }
+        line = line.trim();
+        if (line.isEmpty() || line.startsWith("!") || line.startsWith("[")) {
+            return null;
+        }
+
+        if (line.startsWith("||")) {
+            line = line.substring(2);
+            int caret = line.indexOf('^');
+            if (caret >= 0) {
+                // Skip rules with options such as ^$third-party; keep the plain domain part.
+                line = line.substring(0, caret);
+            }
+        } else {
+            String[] parts = line.split("\\s+");
+            if (parts.length >= 2
+                    && (parts[0].equals("0.0.0.0") || parts[0].equals("127.0.0.1"))) {
+                line = parts[1];
+            } else if (parts.length == 1) {
+                line = parts[0];
+            } else {
+                return null;
+            }
+        }
+
+        line = line.toLowerCase(Locale.ROOT);
+        while (line.startsWith(".")) {
+            line = line.substring(1);
+        }
+        if (!line.contains(".") || !line.matches("[a-z0-9._-]+")) {
+            return null;
+        }
+        return line;
+    }
+
+    private static void loadBuiltInBlocklist() {
+        BLOCKED_DOMAINS.addAll(List.of(
+                // Google ads / analytics
+                "doubleclick.net", "googlesyndication.com", "googleadservices.com",
+                "googletagservices.com", "adservice.google.com", "google-analytics.com",
+                "2mdn.net", "admob.com", "adsense.com",
+                // Major ad exchanges and networks
+                "adnxs.com", "adsrvr.org", "advertising.com", "amazon-adsystem.com",
+                "criteo.com", "criteo.net", "rubiconproject.com", "pubmatic.com",
+                "openx.net", "casalemedia.com", "smartadserver.com", "adform.net",
+                "bidswitch.net", "contextweb.com", "sharethrough.com", "teads.tv",
+                "media.net", "yieldmo.com", "33across.com", "lijit.com", "sovrn.com",
+                "indexww.com", "tapad.com", "gumgum.com", "triplelift.com",
+                "connatix.com", "adroll.com", "ad.gt", "mathtag.com", "turn.com",
+                "rlcdn.com", "adsymptotic.com", "serving-sys.com", "flashtalking.com",
+                "zedo.com", "adcolony.com", "smaato.net", "inmobi.com",
+                // Native / recommendation ad widgets
+                "taboola.com", "outbrain.com", "revcontent.com", "mgid.com", "zemanta.com",
+                // Pop-ups / pop-unders / shady networks
+                "popads.net", "popcash.net", "propellerads.com", "exoclick.com",
+                "juicyads.com", "trafficjunky.com", "adsterra.com", "clickadu.com",
+                "hilltopads.net",
+                // Social platform ad endpoints
+                "ads-twitter.com", "ads.linkedin.com", "ads.yahoo.com", "analytics.yahoo.com",
+                "ads.tiktok.com", "ads.pinterest.com", "ads.reddit.com",
+                // Verification / tracking / data brokers
+                "moatads.com", "adsafeprotected.com", "doubleverify.com", "scorecardresearch.com",
+                "quantserve.com", "quantcount.com", "bluekai.com", "demdex.net", "krxd.net",
+                "everesttech.net", "eyeota.net", "lotame.com", "hotjar.com", "mouseflow.com"));
+    }
+
+    // ---- Proxy plumbing ------------------------------------------------------
 
     private void tunnelConnect(InputStream clientIn, OutputStream clientOut, Target target)
             throws IOException {
@@ -385,13 +531,16 @@ public final class Bushscript {
         candidates.add(path);
     }
 
-    // Modification: We now return the Process object created by the ProcessBuilder
+    // Returns the Process object created by the ProcessBuilder
     private static Process launchBrowser(Path browser, int port, String url) throws IOException {
-        Path profile = Path.of(System.getProperty("user.home"), ".Bush-local-browser");
+        Path profile = profileDir();
         Files.createDirectories(profile);
         return new ProcessBuilder(
                 browser.toString(),
                 "--user-data-dir=" + profile,
+                "--disable-background-mode",
+                "--hide-crash-restore-bubble",
+                "--remote-debugging-port=0",
                 "--proxy-server=http://127.0.0.1:" + port,
                 "--proxy-bypass-list=<-loopback>",
                 "--no-first-run",
@@ -400,6 +549,98 @@ public final class Bushscript {
                 url)
                 .inheritIO()
                 .start();
+    }
+
+    private static Path profileDir() {
+        return Path.of(System.getProperty("user.home"), ".Bush-local-browser");
+    }
+
+    /**
+     * Keeps the proxy alive until every browser window is closed.
+     *
+     * Waiting on the launched process is unreliable: Chrome/Edge may hand the window to an
+     * already-running instance and exit at once, or stay alive in the background after the last
+     * window closes. Instead the browser is started with a local debugging port (listening on
+     * 127.0.0.1 only) and we count its open pages. If that port is unavailable we fall back to
+     * the launcher process plus the profile's lockfile.
+     */
+    private static void waitForBrowser(Process launcher, Path profile) throws InterruptedException {
+        Path portFile = profile.resolve("DevToolsActivePort");
+        HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build();
+        long started = System.nanoTime();
+        boolean sawPage = false;
+        int closedChecks = 0;
+        int idleChecks = 0;
+
+        while (true) {
+            int pages = countOpenPages(http, portFile);
+
+            if (pages > 0) {
+                sawPage = true;
+                closedChecks = 0;
+                idleChecks = 0;
+            } else if (sawPage) {
+                // Zero pages, or the debugging port vanished: the browser has been closed.
+                if (++closedChecks >= 3) {
+                    break;
+                }
+            } else if (!launcher.isAlive() && !profileLocked(profile)) {
+                // No debugging info and the browser is not running at all.
+                if (++idleChecks >= 5) {
+                    long elapsedMs = (System.nanoTime() - started) / 1_000_000;
+                    if (elapsedMs < 30_000) {
+                        System.err.println("The browser closed right after starting (exit code "
+                                + launcher.exitValue() + "). Close any leftover Chrome/Edge "
+                                + "windows and try again, or choose a browser with "
+                                + "--browser=\"C:\\path\\browser.exe\"");
+                    }
+                    break;
+                }
+            } else {
+                idleChecks = 0;
+            }
+            Thread.sleep(1_000);
+        }
+
+        // Release any background processes still holding the profile.
+        launcher.descendants().forEach(ProcessHandle::destroy);
+        launcher.destroy();
+    }
+
+    /** Number of open browser pages/tabs, or -1 if the debugging port can't be reached. */
+    private static int countOpenPages(HttpClient http, Path portFile) {
+        try {
+            int port = Integer.parseInt(Files.readAllLines(portFile).get(0).trim());
+            HttpRequest request = HttpRequest
+                    .newBuilder(URI.create("http://127.0.0.1:" + port + "/json/list"))
+                    .timeout(Duration.ofSeconds(2))
+                    .build();
+            String body = http.send(request, HttpResponse.BodyHandlers.ofString()).body();
+            int count = 0;
+            Matcher matcher = PAGE_TARGET.matcher(body);
+            while (matcher.find()) {
+                count++;
+            }
+            return count;
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            return -1;
+        } catch (Exception error) {
+            return -1;
+        }
+    }
+
+    /** True while a Chromium browser is running on this profile. */
+    private static boolean profileLocked(Path profile) {
+        Path lock = profile.resolve("lockfile");
+        if (!Files.exists(lock)) {
+            return false;
+        }
+        try (FileChannel ignored = FileChannel.open(lock, StandardOpenOption.WRITE)) {
+            return false;
+        } catch (IOException error) {
+            return true;
+        }
     }
 
     private static String normalizeUrl(String value) {
@@ -442,11 +683,20 @@ public final class Bushscript {
                 Options:
                   --port=NUMBER       Local proxy port (default 8899)
                   --browser=PATH      Chrome/Edge executable
+                  --blocklist=PATH    Extra blocklist file (hosts format, one domain per
+                                      line, or ||domain^ rules). Can be repeated.
+                  --no-adblock        Turn the ad blocker off (it is ON by default)
                   --no-launch         Start only the local proxy
                   --help              Show this help
 
+                AdBlock:
+                  Blocks ad, tracker and pop-up domains (and their subdomains) by name.
+                  A built-in list is always loaded; if the file
+                  ~/.Bush-local-browser/blocklist.txt exists it is loaded too.
+
                 The proxy listens only on 127.0.0.1. HTTPS uses CONNECT tunneling;
-                Bush cannot inspect or modify encrypted page contents.
+                Bush cannot inspect or modify encrypted page contents, so blocking
+                happens at the domain level.
                 """);
     }
 
