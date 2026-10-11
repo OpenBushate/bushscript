@@ -113,7 +113,9 @@ public final class Bushscript {
             Process browserProcess = launchBrowser(browser, actualPort, startUrl);
 
             // Block the main thread until the browser is really closed
-            waitForBrowser(browserProcess, profileDir());
+            if (!waitForBrowser(browserProcess, profileDir())) {
+                System.exit(1); // non-zero so the launcher .bat pauses and shows the message
+            }
         } else {
             // Only wait indefinitely if we didn't launch the browser
             new CountDownLatch(1).await();
@@ -564,11 +566,12 @@ public final class Bushscript {
      * 127.0.0.1 only) and we count its open pages. If that port is unavailable we fall back to
      * the launcher process plus the profile's lockfile.
      */
-    private static void waitForBrowser(Process launcher, Path profile) throws InterruptedException {
+    private static boolean waitForBrowser(Process launcher, Path profile) throws InterruptedException {
         Path portFile = profile.resolve("DevToolsActivePort");
         HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build();
         long started = System.nanoTime();
         boolean sawPage = false;
+        boolean startedOk = true;
         int closedChecks = 0;
         int idleChecks = 0;
 
@@ -593,6 +596,7 @@ public final class Bushscript {
                                 + launcher.exitValue() + "). Close any leftover Chrome/Edge "
                                 + "windows and try again, or choose a browser with "
                                 + "--browser=\"C:\\path\\browser.exe\"");
+                        startedOk = false;
                     }
                     break;
                 }
@@ -605,6 +609,7 @@ public final class Bushscript {
         // Release any background processes still holding the profile.
         launcher.descendants().forEach(ProcessHandle::destroy);
         launcher.destroy();
+        return startedOk;
     }
 
     /** Number of open browser pages/tabs, or -1 if the debugging port can't be reached. */
