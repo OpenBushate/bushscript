@@ -568,7 +568,7 @@ public final class Bushscript {
      */
     private static boolean waitForBrowser(Process launcher, Path profile) throws InterruptedException {
         Path portFile = profile.resolve("DevToolsActivePort");
-        HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build();
+        HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofMillis(400)).build();
         long started = System.nanoTime();
         boolean sawPage = false;
         boolean startedOk = true;
@@ -584,12 +584,16 @@ public final class Bushscript {
                 idleChecks = 0;
             } else if (sawPage) {
                 // Zero pages, or the debugging port vanished: the browser has been closed.
-                if (++closedChecks >= 3) {
+                boolean portGone = pages < 0;
+                if (portGone && !launcher.isAlive() && !profileLocked(profile)) {
+                    break; // the browser process has fully exited, no need to wait further
+                }
+                if (++closedChecks >= (portGone ? 2 : 4)) {
                     break;
                 }
             } else if (!launcher.isAlive() && !profileLocked(profile)) {
                 // No debugging info and the browser is not running at all.
-                if (++idleChecks >= 5) {
+                if (++idleChecks >= 20) {
                     long elapsedMs = (System.nanoTime() - started) / 1_000_000;
                     if (elapsedMs < 30_000) {
                         System.err.println("The browser closed right after starting (exit code "
@@ -603,7 +607,7 @@ public final class Bushscript {
             } else {
                 idleChecks = 0;
             }
-            Thread.sleep(1_000);
+            Thread.sleep(250);
         }
 
         // Release any background processes still holding the profile.
@@ -618,7 +622,7 @@ public final class Bushscript {
             int port = Integer.parseInt(Files.readAllLines(portFile).get(0).trim());
             HttpRequest request = HttpRequest
                     .newBuilder(URI.create("http://127.0.0.1:" + port + "/json/list"))
-                    .timeout(Duration.ofSeconds(2))
+                    .timeout(Duration.ofMillis(1_500))
                     .build();
             String body = http.send(request, HttpResponse.BodyHandlers.ofString()).body();
             int count = 0;
