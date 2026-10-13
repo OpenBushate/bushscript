@@ -71,13 +71,13 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ^
  "Say ('        '+$o+'  OK') 'Green';" ^
  "Say '  [2/3] Checking for updates' 'Cyan';" ^
  "try {" ^
- "  $v=(Invoke-WebRequest -Uri 'https://bush.downingtownstem.org/script/version.txt' -UseBasicParsing -TimeoutSec 20).Content.Trim();" ^
+ "  $v=(Invoke-WebRequest -Uri 'https://pull.bush.downingtownstem.org/script/version.txt' -UseBasicParsing -TimeoutSec 20).Content.Trim();" ^
  "  if (!$v -or $v -match '[\r\n]' -or $v.Length -gt 100) {throw 'Invalid version file'};" ^
  "  $old=''; if (Test-Path $vf) {$old=(Get-Content $vf -Raw).Trim()};" ^
  "  if (!(Test-Path $src) -or $v -ne $old) {" ^
  "    Say ('        Downloading version '+$v+'...') 'Yellow';" ^
  "    $tmp=$src+'.download';" ^
- "    Invoke-WebRequest -Uri 'https://bush.downingtownstem.org/script/Bushscript.java' -OutFile $tmp -UseBasicParsing -TimeoutSec 45;" ^
+ "    Invoke-WebRequest -Uri 'https://pull.bush.downingtownstem.org/script/Bushscript.java' -OutFile $tmp -UseBasicParsing -TimeoutSec 45;" ^
  "    $text=Get-Content $tmp -Raw;" ^
  "    if ($text -notmatch '(?m)^\s*package\s+bushscript\s*;') {Remove-Item $tmp -Force; throw 'Downloaded file has an unexpected package declaration'};" ^
  "    Move-Item $tmp $src -Force;" ^
