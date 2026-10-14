@@ -229,7 +229,7 @@ if exist "%APPDIR%\shortcut3.done" (
     if /i not "%MODE%"=="--hidden" timeout /t 3 /nobreak >nul 2>&1
 )
 exit /b 0
-
+rem it is easier to just hard code the image into this file compared to having it upstream due to changing dns
 ::BUSHICON-BEGIN
 ::AAABAAQAAAAAAAEAIACnLwAARgAAADAwAAABACAAOBAAAO0vAAAgIAAAAQAgAI4IAAAlQAAAEBAA
 ::AAEAIAAHAwAAs0gAAIlQTkcNChoKAAAADUlIRFIAAAEAAAABAAgDAAAAa6xYVAAAAwBQTFRFAAAA
