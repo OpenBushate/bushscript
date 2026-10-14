@@ -112,10 +112,15 @@ public final class Bushscript {
             Path browser = findBrowser(requestedBrowser);
             Process browserProcess = launchBrowser(browser, actualPort, startUrl);
 
-            // Block the main thread until the browser is really closed
-            if (!waitForBrowser(browserProcess, profileDir())) {
-                System.exit(1); // non-zero so the launcher .bat pauses and shows the message
+            Process polish = startWindowPolish(profileDir());
+
+            // Block until the browser is really closed, then exit immediately. A non-zero
+            // exit code makes the launcher .bat pause so the message can be read.
+            boolean startedOk = waitForBrowser(browserProcess, profileDir());
+            if (polish != null) {
+                polish.destroy();
             }
+            System.exit(startedOk ? 0 : 1);
         } else {
             // Only wait indefinitely if we didn't launch the browser
             new CountDownLatch(1).await();
@@ -672,6 +677,213 @@ public final class Bushscript {
         }
         return value;
     }
+
+    /**
+     * Windows only. Starts a small hidden PowerShell helper that gives the browser window the
+     * BushScript icon and taskbar identity, so it appears as part of BushScript instead of as a
+     * separate Chrome/Edge button. Purely cosmetic and best effort: returns null if anything is
+     * missing, and the browser then simply keeps its normal icon. Creating a file named
+     * nopolish.txt in the BushScript folder turns it off.
+     */
+    private static Process startWindowPolish(Path profile) {
+        try {
+            if (!System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win")) {
+                return null;
+            }
+            String appDir = System.getenv("APPDIR");
+            String launcher = System.getenv("LAUNCHER");
+            String windir = System.getenv("WINDIR");
+            if (appDir == null || launcher == null || windir == null) {
+                return null;
+            }
+            Path icon = Path.of(appDir, "bush.ico");
+            if (!Files.isRegularFile(icon) || Files.exists(Path.of(appDir, "nopolish.txt"))) {
+                return null;
+            }
+            Path script = Path.of(appDir, "bushpolish.ps1");
+            Files.writeString(script, POLISH_SCRIPT, StandardCharsets.US_ASCII);
+            return new ProcessBuilder(
+                    "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                    "-WindowStyle", "Hidden", "-File", script.toString(),
+                    "-ProfileDir", profile.toString(),
+                    "-IconPath", icon.toString(),
+                    "-Conhost", Path.of(windir, "System32", "conhost.exe").toString(),
+                    "-Launcher", launcher,
+                    "-ParentPid", Long.toString(ProcessHandle.current().pid()))
+                    .redirectErrorStream(true)
+                    .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                    .start();
+        } catch (Exception error) {
+            return null;
+        }
+    }
+
+    private static final String POLISH_SCRIPT = """
+param([string]$ProfileDir, [string]$IconPath, [string]$Conhost, [string]$Launcher, [int]$ParentPid)
+# BushScript window polish: gives the browser window the BushScript name/icon identity on the taskbar.
+# Everything here is best effort; if anything is unavailable the browser simply keeps its normal icon.
+$ErrorActionPreference = 'Stop'
+try {
+Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class BushWin
+{
+    [StructLayout(LayoutKind.Sequential, Pack = 4)]
+    struct PROPERTYKEY { public Guid fmtid; public uint pid; }
+
+    [StructLayout(LayoutKind.Explicit, Size = 24)]
+    struct PROPVARIANT
+    {
+        [FieldOffset(0)] public ushort vt;
+        [FieldOffset(8)] public IntPtr p;
+    }
+
+    [ComImport, Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IPropertyStore
+    {
+        [PreserveSig] int GetCount(out uint c);
+        [PreserveSig] int GetAt(uint i, out PROPERTYKEY k);
+        [PreserveSig] int GetValue(ref PROPERTYKEY k, out PROPVARIANT v);
+        [PreserveSig] int SetValue(ref PROPERTYKEY k, ref PROPVARIANT v);
+        [PreserveSig] int Commit();
+    }
+
+    delegate bool EnumProc(IntPtr h, IntPtr l);
+
+    [DllImport("shell32.dll")]
+    static extern int SHGetPropertyStoreForWindow(IntPtr hwnd, ref Guid riid,
+        [MarshalAs(UnmanagedType.Interface)] out IPropertyStore ppv);
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    static extern int SHGetPropertyStoreFromParsingName(string path, IntPtr pbc, int flags, ref Guid riid,
+        [MarshalAs(UnmanagedType.Interface)] out IPropertyStore ppv);
+    [DllImport("ole32.dll")]
+    static extern int PropVariantClear(ref PROPVARIANT pv);
+    [DllImport("user32.dll")]
+    static extern bool EnumWindows(EnumProc proc, IntPtr l);
+    [DllImport("user32.dll")]
+    static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+    [DllImport("user32.dll")]
+    static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll")]
+    static extern IntPtr GetWindow(IntPtr h, uint cmd);
+    [DllImport("user32.dll")]
+    static extern int GetWindowTextLength(IntPtr h);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    static extern int GetClassName(IntPtr h, StringBuilder sb, int max);
+    [DllImport("user32.dll")]
+    static extern IntPtr SendMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    static extern IntPtr LoadImage(IntPtr inst, string name, uint type, int cx, int cy, uint flags);
+
+    static readonly Guid IID_PropertyStore = new Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99");
+    static readonly Guid FMTID_AppUserModel = new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3");
+
+    static void SetString(IPropertyStore ps, uint pid, string value)
+    {
+        PROPERTYKEY key = new PROPERTYKEY();
+        key.fmtid = FMTID_AppUserModel;
+        key.pid = pid;
+        PROPVARIANT pv = new PROPVARIANT();
+        pv.vt = 31; // VT_LPWSTR
+        pv.p = Marshal.StringToCoTaskMemUni(value);
+        try { ps.SetValue(ref key, ref pv); }
+        finally { PropVariantClear(ref pv); }
+    }
+
+    // Top-level browser windows (class Chrome_WidgetWin_1) that belong to the given process ids.
+    public static long[] FindWindows(int[] pids)
+    {
+        List<long> found = new List<long>();
+        EnumWindows(delegate(IntPtr h, IntPtr l)
+        {
+            if (!IsWindowVisible(h)) return true;
+            if (GetWindow(h, 4) != IntPtr.Zero) return true;   // GW_OWNER: skip owned popups
+            if (GetWindowTextLength(h) == 0) return true;
+            StringBuilder sb = new StringBuilder(64);
+            GetClassName(h, sb, sb.Capacity);
+            if (sb.ToString() != "Chrome_WidgetWin_1") return true;
+            uint pid;
+            GetWindowThreadProcessId(h, out pid);
+            if (Array.IndexOf(pids, (int)pid) >= 0) found.Add(h.ToInt64());
+            return true;
+        }, IntPtr.Zero);
+        return found.ToArray();
+    }
+
+    // Taskbar identity of a window: id + relaunch command/icon/name (lets the user pin it as "BushScript").
+    public static void SetWindowIdentity(long hwnd, string appId, string relaunchCommand, string iconResource, string displayName)
+    {
+        Guid iid = IID_PropertyStore;
+        IPropertyStore ps;
+        if (SHGetPropertyStoreForWindow(new IntPtr(hwnd), ref iid, out ps) != 0 || ps == null) return;
+        try
+        {
+            SetString(ps, 2, relaunchCommand);
+            SetString(ps, 3, iconResource);
+            SetString(ps, 4, displayName);
+            SetString(ps, 5, appId);
+            ps.Commit();
+        }
+        finally { Marshal.ReleaseComObject(ps); }
+    }
+
+    // Same identity on a .lnk so the running window groups under the pinned shortcut.
+    public static void SetShortcutIdentity(string lnkPath, string appId)
+    {
+        Guid iid = IID_PropertyStore;
+        IPropertyStore ps;
+        if (SHGetPropertyStoreFromParsingName(lnkPath, IntPtr.Zero, 2, ref iid, out ps) != 0 || ps == null) return;
+        try
+        {
+            SetString(ps, 5, appId);
+            ps.Commit();
+        }
+        finally { Marshal.ReleaseComObject(ps); }
+    }
+
+    public static void SetWindowIcons(long hwnd, string icoPath)
+    {
+        IntPtr big = LoadImage(IntPtr.Zero, icoPath, 1, 48, 48, 0x10);    // IMAGE_ICON, LR_LOADFROMFILE
+        IntPtr small = LoadImage(IntPtr.Zero, icoPath, 1, 16, 16, 0x10);
+        if (big != IntPtr.Zero) SendMessage(new IntPtr(hwnd), 0x80, new IntPtr(1), big);    // WM_SETICON, ICON_BIG
+        if (small != IntPtr.Zero) SendMessage(new IntPtr(hwnd), 0x80, IntPtr.Zero, small);  // ICON_SMALL
+    }
+}
+'@
+
+    $appId = 'BushScript.Browser'
+    $q = [string][char]34
+    $Relaunch = $q + $Conhost + $q + ' --headless cmd /c ' + $q + $q + $Launcher + $q + $q
+
+    # Give the Desktop / Start menu shortcuts the same identity so the running window joins them.
+    foreach ($dir in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))) {
+        $lnk = Join-Path $dir 'BushScript.lnk'
+        if (Test-Path $lnk) { try { [BushWin]::SetShortcutIdentity($lnk, $appId) } catch { } }
+    }
+
+    $seen = @{}
+    while ($true) {
+        if (-not (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue)) { break }
+        $pids = @(Get-CimInstance Win32_Process -Filter "Name='chrome.exe' OR Name='msedge.exe'" |
+            Where-Object { $_.CommandLine -and $_.CommandLine.Contains($ProfileDir) } |
+            ForEach-Object { [int]$_.ProcessId })
+        if ($pids.Count -gt 0) {
+            foreach ($h in [BushWin]::FindWindows([int[]]$pids)) {
+                if (-not $seen.ContainsKey($h)) {
+                    try { [BushWin]::SetWindowIdentity($h, $appId, $Relaunch, ($IconPath + ',0'), 'BushScript') } catch { }
+                    try { [BushWin]::SetWindowIcons($h, $IconPath) } catch { }
+                    $seen[$h] = $true
+                }
+            }
+        }
+        Start-Sleep -Milliseconds 2000
+    }
+} catch { }
+""";
 
     private void close() {
         try {
